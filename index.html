@@ -1107,7 +1107,7 @@
     log('ok', '✓ Klucz prywatny zaimportowany');
 
     log('info', 'Cert 3/5: Pobieranie challenge...');
-    const challengeRes = await ksefFetch('/api/v2/auth/challenge', {
+    const challengeRes = await ksefFetch('/v2/auth/challenge', {
       method: 'POST',
       body: JSON.stringify({ contextIdentifier: { type: 'Nip', value: nip } })
     });
@@ -1125,7 +1125,7 @@
     log('info', 'Podpis: ' + signature.slice(0, 20) + '...');
 
     log('info', 'Cert 5/5: Wysyłanie certyfikatu do KSeF...');
-    const authRes = await ksefFetch('/api/v2/auth/certificate', {
+    const authRes = await ksefFetch('/v2/auth/certificate', {
       method: 'POST',
       body: JSON.stringify({
         challenge,
@@ -1143,11 +1143,11 @@
     let accessToken = null;
     for (let i = 0; i < 15; i++) {
       await sleep(1500);
-      const statusRes = await ksefFetch('/api/v2/auth/' + encodeURIComponent(referenceNumber));
+      const statusRes = await ksefFetch('/v2/auth/' + encodeURIComponent(referenceNumber));
       log('info', 'Status: ' + JSON.stringify(statusRes).slice(0, 80));
       const code = statusRes.processingCode || statusRes.status;
       if (code === 200 || code === 170) {
-        const redeemRes = await ksefFetch('/api/v2/auth/token/redeem', {
+        const redeemRes = await ksefFetch('/v2/auth/token/redeem', {
           method: 'POST', body: JSON.stringify({ referenceNumber })
         });
         accessToken = redeemRes.accessToken || redeemRes.token;
@@ -1217,7 +1217,7 @@
   // ── KSeF 2.0 auth flow ────────────────────────────────────────
   // Step 1a: Get RSA public key for token encryption
   async function ksefGetPublicKey() {
-    const data = await ksefFetch('/api/v2/security/public-key-certificates');
+    const data = await ksefFetch('/v2/security/public-key-certificates');
     log('info', 'Pełna odpowiedź certyfikatów: ' + JSON.stringify(data).slice(0, 300));
 
     let certs = [];
@@ -1336,7 +1336,7 @@
     }
 
     log('info', 'Krok 3/6: Pobieranie challenge...');
-    const challengeRes = await ksefFetch('/api/v2/auth/challenge', {
+    const challengeRes = await ksefFetch('/v2/auth/challenge', {
       method: 'POST',
       body: JSON.stringify({ contextIdentifier: { type: 'Nip', value: nip } })
     });
@@ -1377,7 +1377,7 @@
         log('info', 'Próba formatu: ' + fmt.label);
 
         // Try sending this format
-        const testRes = await ksefFetch('/api/v2/auth/ksef-token', {
+        const testRes = await ksefFetch('/v2/auth/ksef-token', {
           method: 'POST',
           body: JSON.stringify({ challenge, encryptedToken, contextIdentifier: { type: 'Nip', value: nip } })
         });
@@ -1398,7 +1398,7 @@
           // Per CIRFMF TypeScript SDK: poll status then redeem directly with authenticationToken
           for (let i = 0; i < 15; i++) {
             await sleep(1500);
-            const pollUrl = proxy + '?url=' + encodeURIComponent('https://' + ksefHost() + '/api/v2/auth/' + encodeURIComponent(referenceNumber));
+            const pollUrl = proxy + '?url=' + encodeURIComponent('https://' + ksefHost() + '/v2/auth/' + encodeURIComponent(referenceNumber));
             const pollRes = await fetch(pollUrl, {
               headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' }
             });
@@ -1410,7 +1410,7 @@
             // If we get a valid response with startDate — auth is complete, redeem now
             if (statusRes.startDate || pollRes.ok) {
               // Redeem using authenticationToken directly (not referenceNumber)
-              const redeemUrl = proxy + '?url=' + encodeURIComponent('https://' + ksefHost() + '/api/v2/auth/token/redeem');
+              const redeemUrl = proxy + '?url=' + encodeURIComponent('https://' + ksefHost() + '/v2/auth/token/redeem');
               const redeemRes = await fetch(redeemUrl, {
                 method: 'POST',
                 headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
@@ -1449,44 +1449,92 @@
     // (token sending handled in format loop above)
   }
 
-  // Step 2a: Open online session for reading invoices
-  // KSeF 2.0: POST /api/v2/sessions/online
+  // Step 2: Export invoices — KSeF 2.0 uses export flow for reading
+  let exportedInvoices = null;
   let onlineSessionRef = null;
-  async function ksefOpenOnlineSession(dateFrom, dateTo) {
+
+  async function ksefFetchAllInvoices(dateFrom, dateTo) {
+    if (exportedInvoices !== null) return exportedInvoices;
+    log('info', 'Żądanie eksportu faktur z zakresu ' + dateFrom + ' → ' + dateTo + '...');
     const body = JSON.stringify({
-      dateRange: {
-        dateFrom: dateFrom + 'T00:00:00.000Z',
-        dateTo:   dateTo   + 'T23:59:59.999Z'
-      }
+      dateRange: { dateFrom: dateFrom + 'T00:00:00.000Z', dateTo: dateTo + 'T23:59:59.999Z' },
+      type: 'incremental'
     });
-    const data = await ksefFetch('/api/v2/sessions/online', { method: 'POST', body });
-    log('info', 'Sesja online: ' + JSON.stringify(data).slice(0, 200));
-    onlineSessionRef = data.referenceNumber || data.sessionReferenceNumber;
-    if (!onlineSessionRef) throw new Error('Brak referenceNumber sesji online: ' + JSON.stringify(data));
-    log('ok', '✓ Sesja online otwarta: ' + onlineSessionRef);
-    return onlineSessionRef;
+    const exportRes = await ksefFetch('/v2/invoices/exports', { method: 'POST', body });
+    log('info', 'Eksport: ' + JSON.stringify(exportRes).slice(0, 200));
+    const exportRef = exportRes.referenceNumber || exportRes.exportReferenceNumber;
+    if (!exportRef) throw new Error('Brak referenceNumber eksportu: ' + JSON.stringify(exportRes));
+    log('ok', '✓ Eksport: ' + exportRef);
+    let downloadUrl = null;
+    for (let i = 0; i < 30; i++) {
+      await sleep(2000);
+      const s = await ksefFetch('/v2/invoices/exports/' + encodeURIComponent(exportRef));
+      log('info', 'Eksport status [' + (i+1) + ']: ' + JSON.stringify(s).slice(0, 150));
+      const code = s.processingCode || s.status;
+      if (code === 200 || s.downloadUrl || s.partsList) {
+        downloadUrl = s.downloadUrl || (s.partsList && s.partsList[0]?.downloadUrl);
+        break;
+      }
+      if (code >= 400) throw new Error('Eksport błąd: ' + JSON.stringify(s));
+    }
+    if (!downloadUrl) { exportedInvoices = []; log('warn', '⊘ Brak faktur do eksportu.'); return []; }
+    log('info', 'Pobieranie ZIP: ' + String(downloadUrl).slice(0, 80));
+    const proxy = proxyUrl();
+    const zipRes = await fetch(proxy + '?url=' + encodeURIComponent(downloadUrl), {
+      headers: { 'Authorization': 'Bearer ' + state.ksefSessionToken }
+    });
+    if (!zipRes.ok) throw new Error('ZIP błąd ' + zipRes.status);
+    const zipBuf = await zipRes.arrayBuffer();
+    exportedInvoices = await extractInvoicesFromZip(zipBuf);
+    log('ok', '✓ Pobrano ' + exportedInvoices.length + ' faktur z ZIP');
+    return exportedInvoices;
   }
 
-  // Step 2b: Query invoice list via online session
-  // KSeF 2.0: GET /api/v2/sessions/online/{ref}/invoices
+  async function loadJSZip() {
+    if (window.JSZip) return window.JSZip;
+    return new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+      s.onload = () => res(window.JSZip);
+      s.onerror = () => rej(new Error('JSZip load failed'));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function extractInvoicesFromZip(buf) {
+    const JSZip = await loadJSZip();
+    const zip = await JSZip.loadAsync(buf);
+    const result = [];
+    for (const [name, file] of Object.entries(zip.files)) {
+      if (!file.dir && name.endsWith('.xml')) {
+        const xml = await file.async('string');
+        result.push({ ksefId: name.replace('.xml',''), number: name.replace('.xml',''),
+          rawXml: xml, date: new Date().toISOString().slice(0,10),
+          vendor: '—', nip: '—', net: 0, vat: 0, gross: 0,
+          type: 'received', status: 'pending', driveUrl: null });
+      }
+    }
+    return result;
+  }
+
   async function ksefQueryPage(dateFrom, dateTo, pageOffset) {
-    if (!onlineSessionRef) await ksefOpenOnlineSession(dateFrom, dateTo);
-    const params = new URLSearchParams({ pageSize: 100, pageOffset });
-    const data = await ksefFetch('/api/v2/sessions/online/' + encodeURIComponent(onlineSessionRef) + '/invoices?' + params.toString(), { method: 'GET' });
-    log('info', 'Invoices page: ' + JSON.stringify(data).slice(0, 200));
-    return data;
+    const all = await ksefFetchAllInvoices(dateFrom, dateTo);
+    return { invoices: all.slice(pageOffset, pageOffset + 100), totalCount: all.length, numberOfElements: all.length };
   }
 
-  // Step 3: Download single invoice XML
-  // KSeF 2.0: GET /api/v2/invoices/{ksefReferenceNumber}/content
   async function ksefDownloadInvoice(ksefRefNum) {
-    const data = await ksefFetch('/api/v2/invoices/' + encodeURIComponent(ksefRefNum) + '/content');
+    if (exportedInvoices) {
+      const inv = exportedInvoices.find(i => i.ksefId === ksefRefNum);
+      if (inv) return inv.rawXml;
+    }
+    const data = await ksefFetch('/v2/invoices/' + encodeURIComponent(ksefRefNum) + '/content');
     return data._xml || data._text || null;
   }
 
+
   // Step 4: Close session
   async function ksefCloseSession() {
-    try { await ksefFetch('/api/v2/auth/session/terminate', { method: 'POST', body: '{}' }); } catch(e) {}
+    try { await ksefFetch('/v2/auth/session/terminate', { method: 'POST', body: '{}' }); } catch(e) {}
     state.ksefSessionToken = null;
   }
 
@@ -1820,7 +1868,8 @@
     }
 
     state.syncing = true;
-    onlineSessionRef = null; // reset online session
+    exportedInvoices = null;
+    onlineSessionRef = null;
     document.getElementById('btn-sync').disabled = true;
     document.getElementById('sync-status-msg').style.color = 'var(--accent)';
 
