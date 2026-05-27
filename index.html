@@ -1457,8 +1457,10 @@
     if (exportedInvoices !== null) return exportedInvoices;
     log('info', 'Żądanie eksportu faktur z zakresu ' + dateFrom + ' → ' + dateTo + '...');
     const body = JSON.stringify({
-      dateRange: { dateFrom: dateFrom + 'T00:00:00.000Z', dateTo: dateTo + 'T23:59:59.999Z' },
-      type: 'incremental'
+      dateRange: {
+        dateFrom: dateFrom + 'T00:00:00.000Z',
+        dateTo:   dateTo   + 'T23:59:59.999Z'
+      }
     });
     const exportRes = await ksefFetch('/v2/invoices/exports', { method: 'POST', body });
     log('info', 'Eksport: ' + JSON.stringify(exportRes).slice(0, 200));
