@@ -1457,13 +1457,17 @@
     if (exportedInvoices !== null) return exportedInvoices;
     log('info', 'Żądanie eksportu faktur z zakresu ' + dateFrom + ' → ' + dateTo + '...');
     const body = JSON.stringify({
-      dateRange: {
-        dateFrom: dateFrom + 'T00:00:00.000Z',
-        dateTo:   dateTo   + 'T23:59:59.999Z'
+      filters: {
+        subjectType: 'Subject2',
+        dateRange: {
+          dateType: 'Invoicing',
+          from: dateFrom + 'T00:00:00.000Z',
+          to:   dateTo   + 'T23:59:59.999Z'
+        }
       }
     });
     const exportRes = await ksefFetch('/v2/invoices/exports', { method: 'POST', body });
-    log('info', 'Eksport: ' + JSON.stringify(exportRes).slice(0, 200));
+    log('info', 'Eksport pełna odpowiedź: ' + JSON.stringify(exportRes).slice(0, 400));
     const exportRef = exportRes.referenceNumber || exportRes.exportReferenceNumber;
     if (!exportRef) throw new Error('Brak referenceNumber eksportu: ' + JSON.stringify(exportRes));
     log('ok', '✓ Eksport: ' + exportRef);
