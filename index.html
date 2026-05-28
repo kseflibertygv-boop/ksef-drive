@@ -1453,26 +1453,76 @@
   let exportedInvoices = null;
   let onlineSessionRef = null;
 
+  // Generate random AES-256 key and IV for export encryption
+  async function generateAesKey() {
+    const key = await crypto.subtle.generateKey({ name: 'AES-CBC', length: 256 }, true, ['encrypt', 'decrypt']);
+    const iv = crypto.getRandomValues(new Uint8Array(16));
+    const rawKey = await crypto.subtle.exportKey('raw', key);
+    return { key, iv, rawKey: new Uint8Array(rawKey) };
+  }
+
+  // Encrypt AES key with KSeF SymmetricKeyEncryption RSA public key
+  async function encryptAesKeyWithRsa(aesKeyBytes) {
+    // Get SymmetricKeyEncryption cert
+    const data = await ksefFetch('/v2/security/public-key-certificates');
+    let certs = Array.isArray(data) ? data : (data.certificates || [data]);
+    if (data._xml || data._text) {
+      const xml = (data._xml || data._text).trim();
+      try { certs = JSON.parse(xml.match(/\[[\s\S]*\]/)?.[0] || '[]'); } catch(e) { certs = []; }
+    }
+    const symCert = certs.find(c => c.usage === 'SymmetricKeyEncryption') || certs[1] || certs[0];
+    log('info', 'Certyfikat szyfrowania AES: ' + (symCert?.usage || '?'));
+    const pem = symCert.certificate || symCert.publicKey || '';
+    const b64 = pem.replace(/-----BEGIN[\s\S]*?-----/g,'').replace(/-----END[\s\S]*?-----/g,'').replace(/\s+/g,'');
+    const der = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    // Extract SPKI
+    const rsaOid = [0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01];
+    let spkiStart = -1;
+    for (let i = 0; i < der.length - rsaOid.length; i++) {
+      if (rsaOid.every((b,j) => der[i+j]===b)) { for (let j=i-6;j>=Math.max(0,i-10);j--) { if(der[j]===0x30){spkiStart=j;break;} } break; }
+    }
+    let spki;
+    if (spkiStart >= 0) {
+      let pos = spkiStart+1; let len = der[pos++];
+      if (len&0x80) { const n=len&0x7f; len=0; for(let i=0;i<n;i++) len=(len<<8)|der[pos++]; }
+      spki = der.slice(spkiStart, pos+len);
+    } else { spki = der; }
+    const rsaKey = await crypto.subtle.importKey('spki', spki.buffer, {name:'RSA-OAEP',hash:'SHA-256'}, false, ['encrypt']);
+    const encrypted = await crypto.subtle.encrypt({name:'RSA-OAEP'}, rsaKey, aesKeyBytes);
+    const bytes = new Uint8Array(encrypted);
+    let bin=''; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
   async function ksefFetchAllInvoices(dateFrom, dateTo) {
     if (exportedInvoices !== null) return exportedInvoices;
     log('info', 'Żądanie eksportu faktur z zakresu ' + dateFrom + ' → ' + dateTo + '...');
-    // Try both roles (buyer and seller) — first buyer (received invoices with InvoiceRead)
-    const makeBody = (role) => JSON.stringify({
+
+    // Generate AES key for encrypted export package
+    const { key: aesKey, iv, rawKey } = await generateAesKey();
+    const encryptedAesKey = await encryptAesKeyWithRsa(rawKey);
+    const ivBase64 = btoa(String.fromCharCode(...iv));
+
+    const body = JSON.stringify({
       filters: {
-        subjectType: role === 'buyer' ? 'Subject2' : 'Subject1',
+        subjectType: 'Subject2',
         dateRange: {
-          dateType: 'IssueDate',
+          dateType: 'Invoicing',
           from: dateFrom + 'T00:00:00.000Z',
           to:   dateTo   + 'T23:59:59.999Z'
-        },
-        amount: { type: 'Brutto' }
+        }
+      },
+      encryptionInfo: {
+        encryptedSymmetricKey: encryptedAesKey,
+        initializationVector: ivBase64
       }
     });
-
-    let body = makeBody('buyer');
-    log('info', 'Body eksportu: ' + body);
+    log('info', 'Body eksportu (skrót): ' + body.slice(0, 150) + '...');
     const exportRes = await ksefFetch('/v2/invoices/exports', { method: 'POST', body });
     log('info', 'Eksport pełna odpowiedź: ' + JSON.stringify(exportRes).slice(0, 400));
+    // Store AES key/IV for later decryption of ZIP
+    window._ksefAesKey = aesKey;
+    window._ksefAesIv = iv;
     const exportRef = exportRes.referenceNumber || exportRes.exportReferenceNumber;
     if (!exportRef) throw new Error('Brak referenceNumber eksportu: ' + JSON.stringify(exportRes));
     log('ok', '✓ Eksport: ' + exportRef);
@@ -1495,7 +1545,21 @@
       headers: { 'Authorization': 'Bearer ' + state.ksefSessionToken }
     });
     if (!zipRes.ok) throw new Error('ZIP błąd ' + zipRes.status);
-    const zipBuf = await zipRes.arrayBuffer();
+    let zipBuf = await zipRes.arrayBuffer();
+    // Decrypt if AES key is available (encrypted export package)
+    if (window._ksefAesKey && window._ksefAesIv) {
+      try {
+        log('info', 'Odszyfrowanie paczki AES-CBC...');
+        zipBuf = await crypto.subtle.decrypt(
+          { name: 'AES-CBC', iv: window._ksefAesIv },
+          window._ksefAesKey,
+          zipBuf
+        );
+        log('ok', '✓ Paczka odszyfrowana');
+      } catch(e) {
+        log('warn', '⚠ Odszyfrowanie nieudane: ' + e.message + ' — próba bez szyfrowania');
+      }
+    }
     exportedInvoices = await extractInvoicesFromZip(zipBuf);
     log('ok', '✓ Pobrano ' + exportedInvoices.length + ' faktur z ZIP');
     return exportedInvoices;
