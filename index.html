@@ -1456,19 +1456,21 @@
   async function ksefFetchAllInvoices(dateFrom, dateTo) {
     if (exportedInvoices !== null) return exportedInvoices;
     log('info', 'Żądanie eksportu faktur z zakresu ' + dateFrom + ' → ' + dateTo + '...');
-    const body = JSON.stringify({
+    // Try both roles (buyer and seller) — first buyer (received invoices with InvoiceRead)
+    const makeBody = (role) => JSON.stringify({
       filters: {
-        subjectType: 'Subject2',
+        subjectType: role === 'buyer' ? 'Subject2' : 'Subject1',
         dateRange: {
-          dateType: 'Invoicing',
+          dateType: 'IssueDate',
           from: dateFrom + 'T00:00:00.000Z',
           to:   dateTo   + 'T23:59:59.999Z'
         },
-        amount: {
-          type: 'Brutto'
-        }
+        amount: { type: 'Brutto' }
       }
     });
+
+    let body = makeBody('buyer');
+    log('info', 'Body eksportu: ' + body);
     const exportRes = await ksefFetch('/v2/invoices/exports', { method: 'POST', body });
     log('info', 'Eksport pełna odpowiedź: ' + JSON.stringify(exportRes).slice(0, 400));
     const exportRef = exportRes.referenceNumber || exportRes.exportReferenceNumber;
