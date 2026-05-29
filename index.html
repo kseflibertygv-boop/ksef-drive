@@ -1204,7 +1204,12 @@
 
     if (!res.ok) {
       let msg = res.statusText;
-      try { const j = JSON.parse(text); msg = (j.exception?.exceptionDetailList?.[0]?.exceptionCode || '') + ': ' + (j.exception?.exceptionDetailList?.[0]?.exceptionDescription || j.message || text); } catch(e) { msg = text || msg; }
+      try {
+        const j = JSON.parse(text);
+        const details = j.errors || j.exceptionDetailList || j.exception?.exceptionDetailList || [];
+        const detailStr = details.map(d => (d.exceptionCode || d.code || '') + ': ' + (d.exceptionDescription || d.message || d.detail || '')).join('; ');
+        msg = (j.exceptionCode || j.title || '') + ': ' + (j.exceptionDescription || j.detail || j.message || detailStr || text.slice(0, 300));
+      } catch(e) { msg = text.slice(0, 300) || msg; }
       throw new Error('KSeF ' + res.status + ': ' + msg);
     }
 
