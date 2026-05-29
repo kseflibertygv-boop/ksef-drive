@@ -1541,8 +1541,10 @@
       if (code === 200) {
         // Extract download URL from package.parts[].partName
         const parts = s.package?.parts || s.partsList || s.parts || [];
+        log('info', 'parts: ' + JSON.stringify(parts).slice(0, 400));
         if (parts.length > 0) {
           const partName = parts[0].partName || parts[0].name || parts[0].downloadUrl;
+          log('info', 'partName pełny: ' + partName);
           // Build download URL: /v2/invoices/exports/{exportRef}/parts/{partName}
           if (partName && partName.startsWith('http')) {
             downloadUrl = partName;
