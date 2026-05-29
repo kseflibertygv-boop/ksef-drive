@@ -1203,6 +1203,7 @@
     const text = await res.text();
 
     if (!res.ok) {
+      log('warn', 'Błąd ' + res.status + ' raw: ' + text.slice(0, 500));
       let msg = res.statusText;
       try {
         const j = JSON.parse(text);
