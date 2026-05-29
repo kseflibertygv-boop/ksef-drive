@@ -1538,17 +1538,21 @@
       const s = await ksefFetch('/v2/invoices/exports/' + encodeURIComponent(exportRef));
       log('info', 'Eksport status [' + (i+1) + ']: ' + JSON.stringify(s).slice(0, 300));
       const code = s.status?.code || s.processingCode || s.statusCode;
-      if (code === 200 || s.packageUrl || s.downloadUrl || s.partsList || s.parts) {
-        downloadUrl = s.packageUrl || s.downloadUrl
-          || (s.partsList && s.partsList[0]?.downloadUrl)
-          || (s.parts && s.parts[0]?.url)
-          || (s.parts && s.parts[0]?.downloadUrl);
-        log('info', 'downloadUrl: ' + String(downloadUrl).slice(0, 100));
-        if (downloadUrl) break;
-        // status 200 but no URL — may mean no invoices
-        if (code === 200) {
-          log('warn', '⊘ Eksport gotowy ale brak URL pobierania — brak faktur w zakresie dla Subject2. Próba Subject1...');
-          // Try Subject1 (issued invoices)
+      if (code === 200) {
+        // Extract download URL from package.parts[].partName
+        const parts = s.package?.parts || s.partsList || s.parts || [];
+        if (parts.length > 0) {
+          const partName = parts[0].partName || parts[0].name || parts[0].downloadUrl;
+          // Build download URL: /v2/invoices/exports/{exportRef}/parts/{partName}
+          if (partName && partName.startsWith('http')) {
+            downloadUrl = partName;
+          } else if (partName) {
+            downloadUrl = 'https://' + ksefHost() + '/v2/invoices/exports/' + encodeURIComponent(exportRef) + '/parts/' + encodeURIComponent(partName);
+          }
+          log('info', 'downloadUrl: ' + String(downloadUrl).slice(0, 120));
+          if (downloadUrl) { window._ksefExportRef = exportRef; window._ksefParts = parts; break; }
+        } else {
+          log('warn', '⊘ Eksport gotowy ale package.parts pusty (0 faktur w zakresie dla Subject2). Próba Subject1...');
           const body2 = JSON.stringify({
             filters: { subjectType: 'Subject1', dateRange: { dateType: 'Invoicing', from: dateFrom + 'T00:00:00.000Z', to: dateTo + 'T23:59:59.999Z' } },
             encryption: { encryptedSymmetricKey: encryptedAesKey, initializationVector: ivBase64 }
@@ -1559,32 +1563,50 @@
             for (let j = 0; j < 15; j++) {
               await sleep(2000);
               const s2 = await ksefFetch('/v2/invoices/exports/' + encodeURIComponent(ref2));
-              log('info', 'Subject1 status [' + (j+1) + ']: ' + JSON.stringify(s2).slice(0, 200));
+              log('info', 'Subject1 status [' + (j+1) + ']: ' + JSON.stringify(s2).slice(0, 300));
               const code2 = s2.status?.code || s2.processingCode;
-              downloadUrl = s2.packageUrl || s2.downloadUrl || (s2.partsList && s2.partsList[0]?.downloadUrl) || (s2.parts && s2.parts[0]?.downloadUrl);
-              if (downloadUrl) { log('ok', '✓ Subject1 URL: ' + downloadUrl.slice(0, 60)); break; }
-              if (code2 === 200 && !downloadUrl) { log('warn', '⊘ Subject1 też brak faktur.'); break; }
+              const parts2 = s2.package?.parts || s2.partsList || [];
+              if (code2 === 200) {
+                if (parts2.length > 0) {
+                  const p = parts2[0].partName || parts2[0].name;
+                  downloadUrl = p?.startsWith('http') ? p : 'https://' + ksefHost() + '/v2/invoices/exports/' + encodeURIComponent(ref2) + '/parts/' + encodeURIComponent(p);
+                  window._ksefExportRef = ref2;
+                  log('ok', '✓ Subject1 URL: ' + String(downloadUrl).slice(0, 80));
+                } else {
+                  log('warn', '⊘ Subject1 też brak faktur.');
+                }
+                break;
+              }
               if (code2 >= 400) break;
             }
           }
           break;
         }
       }
-      if (code >= 400) throw new Error('Eksport błąd: ' + JSON.stringify(s));
+      if (typeof code === 'number' && code >= 400) throw new Error('Eksport błąd: ' + JSON.stringify(s));
     }
     if (!downloadUrl) { exportedInvoices = []; log('warn', '⊘ Brak faktur do eksportu.'); return []; }
     log('info', 'Pobieranie ZIP: ' + String(downloadUrl).slice(0, 80));
-    const proxy = proxyUrl();
-    const zipRes = await fetch(proxy + '?url=' + encodeURIComponent(downloadUrl), {
-      headers: { 'Authorization': 'Bearer ' + state.ksefSessionToken }
-    });
+    // Extract path from full URL for ksefFetch
+    let zipPath = downloadUrl;
+    try { zipPath = new URL(downloadUrl).pathname + new URL(downloadUrl).search; } catch(e) {}
+    const zipData = await ksefFetch(zipPath);
+    const zipBuf = zipData._raw || await (async () => {
+      // Fallback: fetch directly with auth header
+      const proxy = proxyUrl();
+      const zipRes = await fetch(proxy + '?url=' + encodeURIComponent(downloadUrl), {
+        headers: { 'Authorization': 'Bearer ' + state.ksefSessionToken }
+      });
+      if (!zipRes.ok) throw new Error('ZIP błąd ' + zipRes.status + ': ' + await zipRes.text());
+      return zipRes.arrayBuffer();
+    })();
     if (!zipRes.ok) throw new Error('ZIP błąd ' + zipRes.status);
-    let zipBuf = await zipRes.arrayBuffer();
+    let zipBuf2 = zipBuf instanceof ArrayBuffer ? zipBuf : zipBuf;
     // Decrypt if AES key is available (encrypted export package)
     if (window._ksefAesKey && window._ksefAesIv) {
       try {
         log('info', 'Odszyfrowanie paczki AES-CBC...');
-        zipBuf = await crypto.subtle.decrypt(
+        zipBuf2 = await crypto.subtle.decrypt(
           { name: 'AES-CBC', iv: window._ksefAesIv },
           window._ksefAesKey,
           zipBuf
@@ -1592,9 +1614,10 @@
         log('ok', '✓ Paczka odszyfrowana');
       } catch(e) {
         log('warn', '⚠ Odszyfrowanie nieudane: ' + e.message + ' — próba bez szyfrowania');
+        zipBuf2 = zipBuf;
       }
     }
-    exportedInvoices = await extractInvoicesFromZip(zipBuf);
+    exportedInvoices = await extractInvoicesFromZip(zipBuf2);
     log('ok', '✓ Pobrano ' + exportedInvoices.length + ' faktur z ZIP');
     return exportedInvoices;
   }
