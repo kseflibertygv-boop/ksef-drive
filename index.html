@@ -1536,11 +1536,39 @@
     for (let i = 0; i < 30; i++) {
       await sleep(2000);
       const s = await ksefFetch('/v2/invoices/exports/' + encodeURIComponent(exportRef));
-      log('info', 'Eksport status [' + (i+1) + ']: ' + JSON.stringify(s).slice(0, 150));
-      const code = s.processingCode || s.status;
-      if (code === 200 || s.downloadUrl || s.partsList) {
-        downloadUrl = s.downloadUrl || (s.partsList && s.partsList[0]?.downloadUrl);
-        break;
+      log('info', 'Eksport status [' + (i+1) + ']: ' + JSON.stringify(s).slice(0, 300));
+      const code = s.status?.code || s.processingCode || s.statusCode;
+      if (code === 200 || s.packageUrl || s.downloadUrl || s.partsList || s.parts) {
+        downloadUrl = s.packageUrl || s.downloadUrl
+          || (s.partsList && s.partsList[0]?.downloadUrl)
+          || (s.parts && s.parts[0]?.url)
+          || (s.parts && s.parts[0]?.downloadUrl);
+        log('info', 'downloadUrl: ' + String(downloadUrl).slice(0, 100));
+        if (downloadUrl) break;
+        // status 200 but no URL — may mean no invoices
+        if (code === 200) {
+          log('warn', '⊘ Eksport gotowy ale brak URL pobierania — brak faktur w zakresie dla Subject2. Próba Subject1...');
+          // Try Subject1 (issued invoices)
+          const body2 = JSON.stringify({
+            filters: { subjectType: 'Subject1', dateRange: { dateType: 'Invoicing', from: dateFrom + 'T00:00:00.000Z', to: dateTo + 'T23:59:59.999Z' } },
+            encryption: { encryptedSymmetricKey: encryptedAesKey, initializationVector: ivBase64 }
+          });
+          const exp2 = await ksefFetch('/v2/invoices/exports', { method: 'POST', body: body2 });
+          const ref2 = exp2.referenceNumber;
+          if (ref2) {
+            for (let j = 0; j < 15; j++) {
+              await sleep(2000);
+              const s2 = await ksefFetch('/v2/invoices/exports/' + encodeURIComponent(ref2));
+              log('info', 'Subject1 status [' + (j+1) + ']: ' + JSON.stringify(s2).slice(0, 200));
+              const code2 = s2.status?.code || s2.processingCode;
+              downloadUrl = s2.packageUrl || s2.downloadUrl || (s2.partsList && s2.partsList[0]?.downloadUrl) || (s2.parts && s2.parts[0]?.downloadUrl);
+              if (downloadUrl) { log('ok', '✓ Subject1 URL: ' + downloadUrl.slice(0, 60)); break; }
+              if (code2 === 200 && !downloadUrl) { log('warn', '⊘ Subject1 też brak faktur.'); break; }
+              if (code2 >= 400) break;
+            }
+          }
+          break;
+        }
       }
       if (code >= 400) throw new Error('Eksport błąd: ' + JSON.stringify(s));
     }
