@@ -1590,9 +1590,10 @@
     if (!downloadUrl) { exportedInvoices = []; log('warn', '⊘ Brak faktur do eksportu.'); return []; }
     log('info', 'Pobieranie ZIP: ' + String(downloadUrl).slice(0, 80));
     const proxy = proxyUrl();
-    const zipRes = await fetch(proxy + '?url=' + encodeURIComponent(downloadUrl), {
-      headers: { 'Authorization': 'Bearer ' + state.ksefSessionToken }
-    });
+    // Azure Blob SAS URLs already have auth in query params — don't send Authorization header
+    const isAzureBlob = downloadUrl.includes('blob.core.windows.net') || downloadUrl.includes('/storage/');
+    const zipHeaders = isAzureBlob ? {} : { 'Authorization': 'Bearer ' + state.ksefSessionToken };
+    const zipRes = await fetch(proxy + '?url=' + encodeURIComponent(downloadUrl), { headers: zipHeaders });
     if (!zipRes.ok) {
       const errText = await zipRes.text();
       throw new Error('ZIP błąd ' + zipRes.status + ': ' + errText.slice(0, 200));
