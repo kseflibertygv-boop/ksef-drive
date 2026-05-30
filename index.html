@@ -1639,10 +1639,37 @@
     for (const [name, file] of Object.entries(zip.files)) {
       if (!file.dir && name.endsWith('.xml')) {
         const xml = await file.async('string');
-        result.push({ ksefId: name.replace('.xml',''), number: name.replace('.xml',''),
-          rawXml: xml, date: new Date().toISOString().slice(0,10),
-          vendor: '—', nip: '—', net: 0, vat: 0, gross: 0,
-          type: 'received', status: 'pending', driveUrl: null });
+        // Extract metadata from XML
+        const getTag = (tag) => {
+          const m = xml.match(new RegExp('<' + tag + '[^>]*>([^<]*)</' + tag + '>'));
+          return m ? m[1].trim() : '';
+        };
+        const getAttr = (tag, attr) => {
+          const m = xml.match(new RegExp('<' + tag + '[^>]*' + attr + '="([^"]*)"'));
+          return m ? m[1].trim() : '';
+        };
+        // KSeF reference number is in filename (without .xml)
+        const ksefId = name.replace('.xml', '');
+        // Invoice number
+        const number = getTag('NrFaktury') || getTag('invoiceReferenceNumber') || ksefId;
+        // Date
+        const date = (getTag('DataWytworzeniaFa') || getTag('DataSprzedazy') || getTag('P_1') || '').slice(0, 10);
+        // Vendor
+        const vendor = getTag('Nazwa') || getTag('NazwaDostawcy') || '—';
+        // NIP
+        const nipVal = getTag('NIP') || getTag('NipDostawcy') || '—';
+        // Amounts
+        const gross = parseFloat(getTag('P_15') || getTag('WartoscBrutto') || getTag('KwotaNaleznosci') || '0') || 0;
+        const net   = parseFloat(getTag('P_13_1') || getTag('WartoscNetto') || '0') || 0;
+        const vat   = parseFloat(getTag('P_14_1') || getTag('WartoscVAT') || '0') || 0;
+
+        result.push({
+          ksefId,
+          number: number || ksefId,
+          date:   date || new Date().toISOString().slice(0, 10),
+          vendor, nip: nipVal, net, vat, gross,
+          type: 'received', rawXml: xml, status: 'pending', driveUrl: null
+        });
       }
     }
     return result;
