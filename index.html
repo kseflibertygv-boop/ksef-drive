@@ -2056,39 +2056,43 @@
       const results = [];
       for (let i = 0; i < toDownload.length; i++) {
         const header = toDownload[i];
-        const ksefId = header.ksefReferenceNumber;
+        const ksefId = header.ksefReferenceNumber || header.ksefId;
         const pct = 32 + Math.round((i / toDownload.length) * 55);
-        setProgress(pct, `${i+1}/${toDownload.length}: ${ksefId}`);
+        setProgress(pct, `${i+1}/${toDownload.length}: ${ksefId || header.number}`);
         document.getElementById('progress-label-left').textContent = `${i+1} / ${toDownload.length}`;
         document.getElementById('progress-label-right').textContent = `${pct}%`;
 
         const inv = {
-          ksefId,
-          number:  header.invoiceReferenceNumber || ksefId,
-          date:    (header.invoicingDate || '').slice(0, 10),
-          vendor:  header.subjectName || '—',
-          nip:     header.subjectIdentifier?.identifier || nip,
-          net:     header.net  || 0,
-          vat:     header.vat  || 0,
-          gross:   header.gross || header.invoiceNetAmount || 0,
-          type:    header.invoiceType || 'other',
-          ksefStatus: header.acquisitionTimestamp ? 'Approved' : 'Received',
-          status:  'pending',
-          rawXml:  null,
+          ksefId:   ksefId || header.ksefId,
+          number:   header.invoiceReferenceNumber || header.number || ksefId,
+          date:     (header.invoicingDate || header.date || '').slice(0, 10),
+          vendor:   header.subjectName || header.vendor || '—',
+          nip:      header.subjectIdentifier?.identifier || header.nip || nip,
+          net:      header.net  || 0,
+          vat:      header.vat  || 0,
+          gross:    header.gross || header.invoiceNetAmount || 0,
+          type:     header.invoiceType || header.type || 'other',
+          ksefStatus: header.acquisitionTimestamp ? 'Approved' : (header.ksefStatus || 'Received'),
+          status:   'pending',
+          rawXml:   header.rawXml || null,
           driveUrl: null
         };
 
-        // Download XML
-        try {
-          const xml = await ksefDownloadInvoice(ksefId);
-          inv.rawXml = xml;
-          log('ok', `✓ XML: ${inv.number}`);
-        } catch(e) {
-          inv.status = 'error';
-          log('err', `✗ XML ${inv.number}: ${e.message}`);
-          state.stats.errors = (state.stats.errors || 0) + 1;
-          results.push(inv);
-          continue;
+        // XML already in rawXml from ZIP export — skip download
+        if (!inv.rawXml) {
+          try {
+            const xml = await ksefDownloadInvoice(ksefId);
+            inv.rawXml = xml;
+            log('ok', `✓ XML: ${inv.number}`);
+          } catch(e) {
+            inv.status = 'error';
+            log('err', `✗ XML ${inv.number}: ${e.message}`);
+            state.stats.errors = (state.stats.errors || 0) + 1;
+            results.push(inv);
+            continue;
+          }
+        } else {
+          log('ok', `✓ XML z ZIP: ${inv.number || inv.ksefId}`);
         }
 
         // Upload to Drive
