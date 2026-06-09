@@ -728,6 +728,9 @@
         <button class="btn btn-success" onclick="uploadSelected()" id="btn-upload" disabled>
           ☁ Wyślij do Drive (<span id="selected-count">0</span>)
         </button>
+        <button class="btn btn-secondary" onclick="downloadSelectedLocal()" id="btn-local" disabled>
+          ⬇ Pobierz lokalnie
+        </button>
         <button class="btn btn-danger" onclick="deleteSelected()" id="btn-delete" disabled>
           ✕ Usuń zaznaczone
         </button>
@@ -1655,13 +1658,24 @@
         // Date
         const date = (getTag('DataWytworzeniaFa') || getTag('DataSprzedazy') || getTag('P_1') || '').slice(0, 10);
         // Vendor
-        const vendor = getTag('Nazwa') || getTag('NazwaDostawcy') || '—';
+        const vendor = getTag('Nazwa') || getTag('NazwaDostawcy') || getTag('NazwaSprzedawcy') || getTag('DaneIdentyfikacyjne>Nazwa') || getTag('P_3A') || '—';
         // NIP
         const nipVal = getTag('NIP') || getTag('NipDostawcy') || '—';
         // Amounts
-        const gross = parseFloat(getTag('P_15') || getTag('WartoscBrutto') || getTag('KwotaNaleznosci') || '0') || 0;
-        const net   = parseFloat(getTag('P_13_1') || getTag('WartoscNetto') || '0') || 0;
-        const vat   = parseFloat(getTag('P_14_1') || getTag('WartoscVAT') || '0') || 0;
+        // FA(2): P_15=brutto, P_13_1/P_13_2=netto, P_14_1/P_14_2=VAT
+        // FA(3): WartoscBrutto, WartoscNetto, WartoscVAT, KwotaPodatku
+        const gross = parseFloat(
+          getTag('P_15') || getTag('WartoscBrutto') || getTag('KwotaNaleznosci') ||
+          getTag('P_15A') || getTag('wartoscBrutto') || '0'
+        ) || 0;
+        const net = parseFloat(
+          getTag('P_13_1') || getTag('P_13_2') || getTag('P_13_3') || getTag('P_13_4') ||
+          getTag('WartoscNetto') || getTag('wartoscNetto') || getTag('P_13_5') || '0'
+        ) || 0;
+        const vat = parseFloat(
+          getTag('P_14_1') || getTag('P_14_2') || getTag('P_14_3') || getTag('P_14_4') ||
+          getTag('WartoscVAT') || getTag('KwotaPodatku') || getTag('wartoscVat') || '0'
+        ) || 0;
 
         result.push({
           ksefId,
@@ -2237,6 +2251,7 @@
           <div style="display:flex;gap:6px">
             ${inv.driveUrl ? `<button class="btn btn-success" style="padding:4px 10px;font-size:11px" onclick="openDrive('${inv.driveUrl}')">Drive</button>` : ''}
             <button class="btn btn-secondary" style="padding:4px 10px;font-size:11px" onclick="downloadXml('${inv.number}')">XML</button>
+            <button class="btn btn-secondary" style="padding:4px 10px;font-size:11px;background:rgba(79,127,255,0.1)" onclick="downloadXmlLocal('${inv.number}')">⬇</button>
             <button class="btn btn-danger" style="padding:4px 10px;font-size:11px" onclick="deleteInvoice('${inv.number}')">✕</button>
           </div>
         </td>
@@ -2282,10 +2297,59 @@
     log('warn', '⌫ Usunięto z listy: ' + numbers.length + ' faktur');
   }
 
+    // ── Local download functions ─────────────────────────────────
+  function downloadXmlLocal(number) {
+    const inv = state.invoices.find(i => i.number === number || i.ksefId === number);
+    if (!inv) { log('err', 'Nie znaleziono faktury: ' + number); return; }
+    const xml = inv.rawXml || buildXml(inv);
+    const filename = buildFilename(inv);
+    const blob = new Blob([xml], { type: 'application/xml' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    log('ok', '⬇ Pobrano lokalnie: ' + filename);
+  }
+
+  async function downloadSelectedLocal() {
+    const checked = [...document.querySelectorAll('.inv-check:checked')];
+    if (!checked.length) return;
+    const invoices = checked.map(c => state.filteredInvoices[parseInt(c.dataset.idx)]).filter(Boolean);
+
+    if (invoices.length === 1) {
+      // Single file — download directly
+      downloadXmlLocal(invoices[0].number || invoices[0].ksefId);
+      return;
+    }
+
+    // Multiple files — pack into ZIP
+    log('info', 'Pakowanie ' + invoices.length + ' faktur do ZIP...');
+    try {
+      const JSZip = await loadJSZip();
+      const zip = new JSZip();
+      for (const inv of invoices) {
+        const xml = inv.rawXml || buildXml(inv);
+        const filename = buildFilename(inv);
+        zip.file(filename, xml);
+      }
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'faktury_ksef_' + new Date().toISOString().slice(0,10) + '.zip';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      log('ok', '⬇ Pobrano ' + invoices.length + ' faktur jako ZIP');
+    } catch(e) {
+      log('err', 'Błąd pakowania ZIP: ' + e.message);
+    }
+  }
+
     function updateSelectedCount() {
     const count = document.querySelectorAll('.inv-check:checked').length;
     document.getElementById('selected-count').textContent = count;
     document.getElementById('btn-upload').disabled = count === 0;
+    document.getElementById('btn-local').disabled = count === 0;
     document.getElementById('btn-delete').disabled = count === 0;
   }
 
@@ -2303,6 +2367,11 @@
   async function uploadSelected() {
     const checked = [...document.querySelectorAll('.inv-check:checked')];
     if (!checked.length) return;
+    // Try to restore token from sessionStorage if lost
+    if (!state.driveAccessToken) {
+      const saved = sessionStorage.getItem('drive_token');
+      if (saved) { state.driveAccessToken = saved; state.driveConnected = true; }
+    }
     if (!state.driveConnected || !state.driveAccessToken) {
       alert('Najpierw autoryzuj Google Drive w zakładce Konfiguracja.');
       return;
